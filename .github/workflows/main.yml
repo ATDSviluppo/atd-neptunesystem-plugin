@@ -1,9 +1,6 @@
 name: Build and Deploy Plugins
 
 on:
-  push:
-    branches:
-      - main
 
   workflow_dispatch:
 
