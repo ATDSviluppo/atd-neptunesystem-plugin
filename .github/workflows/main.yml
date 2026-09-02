@@ -1,4 +1,4 @@
-name: Build and Deploy Plugin
+name: Build and Deploy Plugins
 
 on:
   push:
@@ -9,21 +9,12 @@ on:
 
 jobs:
   build-and-deploy:
-
     runs-on: ubuntu-latest
 
     steps:
-
-      # ==========================================================
-      # Checkout
-      # ==========================================================
       - name: Checkout
         uses: actions/checkout@v4
 
-
-      # ==========================================================
-      # Setup Java
-      # ==========================================================
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
@@ -31,40 +22,56 @@ jobs:
           java-version: '21'
           cache: maven
 
-
-      # ==========================================================
-      # Build plugin
-      # ==========================================================
-      - name: Build plugin
-        working-directory: MailModule
+      - name: Build all plugins
         run: |
-          mvn --batch-mode clean package -Dmaven.test.skip=true
+          set -e
 
+          for plugin in */; do
+            if [ -f "${plugin}pom.xml" ]; then
+              echo "========================================"
+              echo "Building plugin: ${plugin}"
+              echo "========================================"
 
-      # ==========================================================
-      # Prepare JAR
-      # ==========================================================
-      - name: Prepare plugin
+              mvn --batch-mode \
+                -f "${plugin}pom.xml" \
+                clean package \
+                -Dmaven.test.skip=true
+            fi
+          done
+
+      - name: Collect plugin JARs
         run: |
+          set -e
+
           mkdir -p deploy
 
-          JAR=$(find MailModule/target -maxdepth 1 -type f -name "*.jar" ! -name "*-sources.jar" ! -name "*-javadoc.jar" | head -n 1)
+          for plugin in */; do
+            if [ -d "${plugin}target" ]; then
 
-          if [ -z "$JAR" ]; then
-            echo "ERROR: Plugin JAR not found"
-            exit 1
-          fi
+              JAR=$(find "${plugin}target" \
+                -maxdepth 1 \
+                -type f \
+                -name "*.jar" \
+                ! -name "*-original.jar" \
+                ! -name "*-sources.jar" \
+                ! -name "*-javadoc.jar" \
+                | head -n 1)
 
-          echo "Plugin JAR: $JAR"
+              if [ -n "$JAR" ]; then
+                echo "Found plugin JAR: $JAR"
 
-          cp "$JAR" deploy/plugin.jar
+                cp "$JAR" deploy/
 
-          ls -lh deploy/plugin.jar
+              else
+                echo "No JAR found for ${plugin}"
+              fi
+            fi
+          done
 
+          echo ""
+          echo "Plugins to deploy:"
+          ls -lh deploy/
 
-      # ==========================================================
-      # Configure SSH
-      # ==========================================================
       - name: Configure SSH
         run: |
           mkdir -p ~/.ssh
@@ -74,33 +81,29 @@ jobs:
           chmod 600 ~/.ssh/id_rsa
 
           ssh-keyscan -p "${{ secrets.SERVER_PORT }}" \
-            "${{ secrets.SERVER_HOST }}" >> ~/.ssh/known_hosts
+            "${{ secrets.SERVER_HOST }}" \
+            >> ~/.ssh/known_hosts
 
           chmod 644 ~/.ssh/known_hosts
 
-
-      # ==========================================================
-      # Deploy plugin
-      # ==========================================================
-      - name: Upload plugin
+      - name: Create remote directory
         run: |
           ssh \
             -p "${{ secrets.SERVER_PORT }}" \
             "${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}" \
             "mkdir -p '${{ secrets.PLUGIN_TARGET_DIR }}'"
 
+      - name: Upload all plugins
+        run: |
           scp \
             -P "${{ secrets.SERVER_PORT }}" \
-            deploy/plugin.jar \
-            "${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}:${{ secrets.PLUGIN_TARGET_DIR }}/plugin.jar"
+            deploy/*.jar \
+            "${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}:${{ secrets.PLUGIN_TARGET_DIR }}/"
 
-
-      # ==========================================================
-      # Verify deployment
-      # ==========================================================
       - name: Verify deployment
         run: |
           ssh \
             -p "${{ secrets.SERVER_PORT }}" \
             "${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}" \
-            "ls -lh '${{ secrets.PLUGIN_TARGET_DIR }}/plugin.jar'"
+            "ls -lh '${{ secrets.PLUGIN_TARGET_DIR }}'"
+
