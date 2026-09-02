@@ -1,0 +1,122 @@
+name: Publish Maven Modules
+
+on:
+  workflow_dispatch:
+
+jobs:
+
+  # ============================================================
+  # Detect modules to publish
+  # ============================================================
+  detect-modules:
+    runs-on: ubuntu-latest
+
+    outputs:
+      modules: ${{ steps.detect.outputs.modules }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Detect modules
+        id: detect
+        shell: bash
+        run: |
+
+          modules=()
+
+          # ----------------------------------------------------
+          # Manual execution → publish all modules
+          # ----------------------------------------------------
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+
+            echo "Manual execution: publishing all modules"
+
+            for dir in */; do
+              if [ -f "${dir}pom.xml" ]; then
+                modules+=("${dir%/}")
+              fi
+            done
+
+          # ----------------------------------------------------
+          # Push → publish only changed modules
+          # ----------------------------------------------------
+          else
+
+            echo "Push detected: checking changed modules"
+
+            changed_files=$(git diff --name-only HEAD^ HEAD)
+
+            echo "Changed files:"
+            echo "$changed_files"
+
+            for dir in */; do
+
+              if [ -f "${dir}pom.xml" ]; then
+
+                module="${dir%/}"
+
+                if echo "$changed_files" | grep -q "^${module}/"; then
+                  modules+=("$module")
+                fi
+
+              fi
+
+            done
+
+          fi
+
+          # ----------------------------------------------------
+          # Convert array to compact JSON
+          # ----------------------------------------------------
+          JSON=$(printf '%s\n' "${modules[@]}" | jq -R -s -c '
+            split("\n")
+            | map(select(length > 0))
+          ')
+
+          echo "Modules to publish:"
+          echo "$JSON"
+
+          echo "modules=$JSON" >> "$GITHUB_OUTPUT"
+
+
+  # ============================================================
+  # Publish selected modules
+  # ============================================================
+  publish:
+    needs: detect-modules
+
+    if: needs.detect-modules.outputs.modules != '[]'
+
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        module: ${{ fromJson(needs.detect-modules.outputs.modules) }}
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          server-id: github
+          server-username: GITHUB_ACTOR
+          server-password: GITHUB_TOKEN
+
+      - name: Publish module
+        working-directory: ${{ matrix.module }}
+        run: |
+          mvn --batch-mode clean deploy -Dmaven.test.skip=true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
